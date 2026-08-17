@@ -65,14 +65,11 @@ pytest-cov = "^6.2.1"
 responses = "^0.25.3"
 ruff = "^0.12.4"
 mypy = "^1.18.2"
-robotframework-robocop = "^6.5.1"
-# Robocop on the 6.x line imports `click` in `run.py` and `files.py` without declaring it, and
-# its `typer-slim` dependency does not pull click in either. Reproduced on 6.13.0 in a venv
-# holding nothing but robocop: `robocop check` dies with ModuleNotFoundError. Until this project
-# dropped black, black's own click dependency was what happened to satisfy it, which is why the
-# break only surfaced then. Fixed upstream on the 8.x line, which needs no click at all - so this
-# entry goes away when the robocop cap moves to ^8.
-click = "^8.1"
+# 8.x rather than 6.x for a packaging reason as much as a feature one: robocop 6.x imports
+# `click` in `run.py` and `files.py` without declaring it, so `robocop check` dies with
+# ModuleNotFoundError in an environment that has nothing else pulling click in. 8.x declares
+# what it imports, which is why no `click` entry is needed here.
+robotframework-robocop = "^8.8"
 robotframework-requests = "^0.9.7"
 
 [build-system]
@@ -119,7 +116,6 @@ ignore = [
     # Both rules push the suites onto Robot Framework 7 syntax (`VAR` in place of
     # `Set Variable` and `Create Dictionary`). The suites have to stay runnable on the
     # oldest Robot Framework this library supports, which is 6.1.1.
-    "deprecated-statement",
     "replace-create-with-var",
     "replace-set-variable-with-var",
 ]
