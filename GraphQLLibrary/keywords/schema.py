@@ -1,115 +1,112 @@
+from pathlib import Path
 from typing import Any, Optional
 
 from assertionengine import AssertionOperator, verify_assertion
+from graphql import (
+    build_schema,
+    find_breaking_changes,
+    find_dangerous_changes,
+    GraphQLInterfaceType,
+    GraphQLObjectType,
+    GraphQLSchema,
+    print_schema,
+)
+from robot.api import logger
 from robot.api.deco import keyword
 
-from GraphQLLibrary.errors import GraphQLResponseError
-from GraphQLLibrary.keywords.query import QueryKeywords
-
-# `includeDeprecated: true` matters: introspection omits deprecated fields unless it is asked
-# for them, so without it `Get Deprecated Fields` would always answer with an empty list.
-# Only object and interface fields are requested. Deprecated input fields and enum values are
-# also introspectable, but `inputFields(includeDeprecated:)` and
-# `enumValues(includeDeprecated:)` are later additions that older servers reject outright,
-# which would turn every keyword here into an error against them.
-INTROSPECTION_QUERY = """
-query GraphQLLibraryIntrospection {
-  __schema {
-    queryType {
-      fields(includeDeprecated: true) {
-        name
-      }
-    }
-    mutationType {
-      fields(includeDeprecated: true) {
-        name
-      }
-    }
-    types {
-      name
-      fields(includeDeprecated: true) {
-        name
-        isDeprecated
-        deprecationReason
-      }
-    }
-  }
-}
-"""
+from GraphQLLibrary.keywords.connection import ConnectionKeywords
+from GraphQLLibrary.schema import fetch_schema
+from GraphQLLibrary.session_pool import SessionManager
 
 
 class SchemaKeywords:
     """
-    Keywords for reading a schema through introspection.
+    Keywords for reading a schema through introspection, and for noticing when it changes.
 
     These answer the question the GraphiQL or Apollo Sandbox page at an endpoint answers: what
     operations does this server offer, and what has been deprecated. Introspection is an
     ordinary query, so nothing here reaches past the transport the other keywords use.
 
-    Each keyword performs one introspection query. Nothing is cached, because a suite that
-    checks a schema is usually checking a deployment that just changed.
+    The schema is introspected once per endpoint and then held, because a real schema runs to
+    hundreds of kilobytes. `Refresh Graphql Schema` drops it when a deployment changes it
+    mid-suite.
 
     Servers commonly disable introspection outside development, Apollo Server among them. When
     it is off, these keywords fail saying so rather than reporting an empty schema.
     """
 
-    def __init__(self, query: QueryKeywords) -> None:
+    def __init__(self, session_manager: SessionManager, connection: ConnectionKeywords) -> None:
         """
         Initializes the schema keywords.
 
         Arguments:
-        - ``query``: Used to send the introspection query on the session.
+        - ``session_manager``: Holds the pool of open endpoints and the schemas read from them.
+        - ``connection``: Resolves aliases to sessions.
         """
-        self.query = query
+        self.session_manager = session_manager
+        self.connection = connection
 
     # ----------------------------------------------------------------- #
     # Internals
     # ----------------------------------------------------------------- #
 
-    def _introspect(self, alias: Optional[str]) -> dict:
-        """Return the ``__schema`` field, or fail explaining why it could not be read."""
-        try:
-            response = self.query.execute_query(INTROSPECTION_QUERY, alias=alias)
-        except GraphQLResponseError as error:
-            raise GraphQLResponseError(
-                f"The schema could not be introspected. Servers often disable introspection "
-                f"outside development, which is reported as an ordinary GraphQL error. The "
-                f"server said:\n{error}",
-                errors=error.errors,
-                data=error.data,
-                extensions=error.extensions,
-            ) from error
-        schema = (response.get("data") or {}).get("__schema")
-        if not schema:
-            raise GraphQLResponseError(
-                "The server answered the introspection query without a '__schema' field, so the "
-                "schema cannot be read. Introspection may be disabled or filtered by a gateway."
-            )
-        return dict(schema)
+    def _schema(self, alias: Optional[str]) -> GraphQLSchema:
+        """Return the endpoint's schema, introspecting it if it is not held yet."""
+        return fetch_schema(self.session_manager, self.connection.get_session(alias))
 
     @staticmethod
-    def _root_fields(schema: dict, root: str) -> list[str]:
-        """Return the field names of a root type, which is null when the schema has none."""
-        root_type = schema.get(root)
-        if not root_type:
+    def _root_fields(schema: GraphQLSchema, root: str) -> list[str]:
+        """Return the field names of a root type, which is None when the schema has none."""
+        root_type = getattr(schema, root)
+        if root_type is None:
             return []
-        return [str(field["name"]) for field in root_type.get("fields") or []]
+        return list(root_type.fields)
 
     @staticmethod
-    def _type_fields(schema: dict) -> list[tuple[str, dict]]:
-        """Return every (type name, field) pair, skipping the introspection types themselves.
+    def _type_fields(schema: GraphQLSchema) -> list[tuple[str, str, Any]]:
+        """Return every (type name, field name, field) triple a suite could ask about.
 
         The ``__``-prefixed types are part of the introspection system rather than the schema a
-        suite is asking about, and every server carries the same ones.
+        suite is asking about, and every server carries the same ones. Only objects and
+        interfaces have fields; input objects and enums are excluded, which is the same limit
+        the introspection query itself carries.
         """
-        pairs = []
-        for type_ in schema.get("types") or []:
-            name = str(type_.get("name") or "")
+        triples = []
+        for name, type_ in schema.type_map.items():
             if name.startswith("__"):
                 continue
-            for field in type_.get("fields") or []:
-                pairs.append((name, dict(field)))
-        return pairs
+            if not isinstance(type_, (GraphQLObjectType, GraphQLInterfaceType)):
+                continue
+            for field_name, field in type_.fields.items():
+                triples.append((name, field_name, field))
+        return triples
+
+    def _load_snapshot(self, path: str) -> GraphQLSchema:
+        """Read a schema from an SDL file written by `Save Schema Snapshot`."""
+        file = Path(path)
+        if not file.is_file():
+            raise ValueError(f"Schema snapshot '{path}' was not found. Write one with `Save Schema Snapshot`.")
+        try:
+            return build_schema(file.read_text(encoding="utf-8"))
+        except Exception as error:
+            raise ValueError(f"Schema snapshot '{path}' could not be read as SDL. {error}") from error
+
+    def _compared_pair(self, path: str, alias: Optional[str]) -> tuple[GraphQLSchema, GraphQLSchema]:
+        """Return the snapshot and the live schema, both built the same way.
+
+        The live schema comes from introspection; the snapshot comes from SDL. Comparing those
+        two directly reports differences that are not schema changes at all: a server built on
+        graphql-js describes ``@deprecated`` with four locations, while graphql-core's own
+        built-in adds ``DIRECTIVE_DEFINITION``, so every comparison against a real JS server
+        claimed a directive location had been removed. Printing the live schema and reading it
+        back puts both sides through the same builder, which leaves only real differences.
+        """
+        return self._load_snapshot(path), build_schema(print_schema(self._schema(alias)))
+
+    def _changes(self, path: str, alias: Optional[str], finder: Any) -> list[str]:
+        """Run one of graphql-core's change finders over the snapshot and the live schema."""
+        old, new = self._compared_pair(path, alias)
+        return [f"{change.type.name}: {change.description}" for change in finder(old, new)]
 
     # ----------------------------------------------------------------- #
     # Reading
@@ -138,7 +135,7 @@ class SchemaKeywords:
         | ${queries}    Get Schema Queries
         | Get Schema Queries    contains    user
         """
-        queries = self._root_fields(self._introspect(alias), "queryType")
+        queries = self._root_fields(self._schema(alias), "query_type")
         return verify_assertion(queries, assertion_operator, assertion_expected, "GraphQL schema queries", message)
 
     @keyword
@@ -162,7 +159,7 @@ class SchemaKeywords:
         Example:
         | Get Schema Mutations    contains    createUser
         """
-        mutations = self._root_fields(self._introspect(alias), "mutationType")
+        mutations = self._root_fields(self._schema(alias), "mutation_type")
         return verify_assertion(mutations, assertion_operator, assertion_expected, "GraphQL schema mutations", message)
 
     @keyword
@@ -195,9 +192,9 @@ class SchemaKeywords:
         | ${deprecated}    Get Deprecated Fields
         """
         deprecated = sorted(
-            f"{type_name}.{field['name']}"
-            for type_name, field in self._type_fields(self._introspect(alias))
-            if field.get("isDeprecated")
+            f"{type_name}.{field_name}"
+            for type_name, field_name, field in self._type_fields(self._schema(alias))
+            if field.deprecation_reason is not None
         )
         return verify_assertion(
             deprecated, assertion_operator, assertion_expected, "GraphQL deprecated fields", message
@@ -228,21 +225,134 @@ class SchemaKeywords:
         if not type_name or not field_name:
             raise ValueError(f"Expected a field as 'Type.field', got '{field}'.")
 
-        pairs = self._type_fields(self._introspect(alias))
-        known_types = {name for name, _ in pairs}
+        triples = self._type_fields(self._schema(alias))
+        known_types = {name for name, _, _ in triples}
         if type_name not in known_types:
             raise ValueError(
                 f"The schema holds no type '{type_name}'. Types with fields: "
                 f"{', '.join(sorted(known_types)) or 'none'}."
             )
 
-        for name, found in pairs:
-            if name != type_name or found["name"] != field_name:
+        for name, found_name, found in triples:
+            if name != type_name or found_name != field_name:
                 continue
-            if found.get("isDeprecated"):
-                reason = found.get("deprecationReason") or "no reason given"
-                raise AssertionError(f"Field '{field}' is deprecated: {reason}")
+            if found.deprecation_reason is not None:
+                raise AssertionError(f"Field '{field}' is deprecated: {found.deprecation_reason}")
             return
 
-        available = sorted(found["name"] for name, found in pairs if name == type_name)
+        available = sorted(found_name for name, found_name, _ in triples if name == type_name)
         raise ValueError(f"Type '{type_name}' has no field '{field_name}'. Fields: {', '.join(available)}.")
+
+    # ----------------------------------------------------------------- #
+    # Drift
+    # ----------------------------------------------------------------- #
+
+    @keyword
+    def save_schema_snapshot(self, path: str, alias: Optional[str] = None) -> str:
+        """Write the endpoint's schema to a file as SDL, to compare against later.
+
+        SDL rather than the introspection JSON, because a committed snapshot is only useful if a
+        person can read the diff. Commit the file, and a schema change shows up in review.
+
+        Arguments:
+        - ``path``: File to write. Existing content is replaced.
+        - ``alias``: Session to introspect. Defaults to the active session.
+
+        Returns: The path written, so it can be assigned in one line.
+
+        Example:
+        | Save Schema Snapshot    ${CURDIR}/schema.graphql
+        """
+        file = Path(path)
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(print_schema(self._schema(alias)), encoding="utf-8")
+        logger.info(f"Wrote the schema of '{self.connection.get_session(alias).alias}' to {path}.")
+        return path
+
+    @keyword
+    def get_schema_breaking_changes(
+        self,
+        path: str,
+        assertion_operator: Optional[AssertionOperator] = None,
+        assertion_expected: Any = None,
+        alias: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> list[str]:
+        """Return the changes since a snapshot that would break an existing client.
+
+        A removed field, a removed type, a field whose type changed incompatibly, or an argument
+        that became required. These are the changes that break a suite whether or not it was
+        warned, which is what makes them worth asserting on in CI.
+
+        Arguments:
+        - ``path``: Snapshot written earlier by `Save Schema Snapshot`.
+        - ``assertion_operator``: Operator to check the list with, such as ``==``.
+        - ``assertion_expected``: Value the operator compares against.
+        - ``alias``: Session to introspect. Defaults to the active session.
+        - ``message``: Custom message used when the assertion fails.
+
+        Returns: List of ``CHANGE_TYPE: description`` strings, empty when nothing broke.
+
+        Example:
+        | Get Schema Breaking Changes    ${CURDIR}/schema.graphql    ==    ${{ [] }}
+        """
+        changes = self._changes(path, alias, find_breaking_changes)
+        return verify_assertion(
+            changes, assertion_operator, assertion_expected, "GraphQL breaking changes", message
+        )
+
+    @keyword
+    def get_schema_dangerous_changes(
+        self,
+        path: str,
+        assertion_operator: Optional[AssertionOperator] = None,
+        assertion_expected: Any = None,
+        alias: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> list[str]:
+        """Return the changes since a snapshot that may break a client, without certainly doing so.
+
+        A new value added to an enum a suite switches on, an optional argument added, a type
+        added to a union. Nothing here breaks a query outright, which is why it is reported
+        apart from the breaking changes rather than mixed in with them.
+
+        Arguments:
+        - ``path``: Snapshot written earlier by `Save Schema Snapshot`.
+        - ``assertion_operator``: Operator to check the list with, such as ``==``.
+        - ``assertion_expected``: Value the operator compares against.
+        - ``alias``: Session to introspect. Defaults to the active session.
+        - ``message``: Custom message used when the assertion fails.
+
+        Returns: List of ``CHANGE_TYPE: description`` strings.
+
+        Example:
+        | Get Schema Dangerous Changes    ${CURDIR}/schema.graphql
+        """
+        changes = self._changes(path, alias, find_dangerous_changes)
+        return verify_assertion(
+            changes, assertion_operator, assertion_expected, "GraphQL dangerous changes", message
+        )
+
+    @keyword
+    def schema_should_have_no_breaking_changes(self, path: str, alias: Optional[str] = None) -> None:
+        """Fail when the schema has changed since a snapshot in a way that breaks clients.
+
+        The assertion form of `Get Schema Breaking Changes`, for a suite that wants the schema
+        checked as a test rather than read as a value.
+
+        Arguments:
+        - ``path``: Snapshot written earlier by `Save Schema Snapshot`.
+        - ``alias``: Session to introspect. Defaults to the active session.
+
+        Raises: ``AssertionError`` listing every breaking change.
+
+        Example:
+        | Schema Should Have No Breaking Changes    ${CURDIR}/schema.graphql
+        """
+        changes = self._changes(path, alias, find_breaking_changes)
+        if changes:
+            newline = "\n"
+            raise AssertionError(
+                f"The schema has {len(changes)} breaking change(s) since {path}:\n"
+                f"{newline.join('- ' + change for change in changes)}"
+            )
