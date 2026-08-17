@@ -38,3 +38,11 @@ All notable changes to this project are documented here. The format follows
 - `Create Graphql Session` accepts an existing `requests.Session`, so cookies, authentication
   and adapters configured elsewhere are shared. It is left open on teardown, since the
   library did not open it.
+
+- Schema keywords read an endpoint through introspection, which is what the GraphiQL page at a
+  `/graphql` URL shows: `Get Schema Queries` and `Get Schema Mutations` list what is offered,
+  and `Get Deprecated Fields` and `Field Should Not Be Deprecated` cover the deprecations. They
+  ask for deprecated fields explicitly, since introspection omits them otherwise, and they
+  report object and interface fields only — requesting deprecated input fields or enum values
+  errors on older servers. A server with introspection disabled, which is the default outside
+  development on Apollo Server, is reported as such rather than as an empty schema.

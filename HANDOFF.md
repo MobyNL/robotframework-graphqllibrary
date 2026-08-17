@@ -46,14 +46,15 @@ GraphQLLibrary/
 └── keywords/
     ├── connection.py    ConnectionKeywords  — sessions, aliases, headers
     ├── query.py         QueryKeywords       — execute, load, validate, check-with-retry
-    └── response.py      ResponseKeywords    — getters and assertions
-utest/                   106 pytest tests, 99% coverage
-atest/                   34 Robot tests, .graphql query files, and server/graphql_server.py
+    ├── response.py      ResponseKeywords    — getters and assertions
+    └── schema.py        SchemaKeywords      — introspection: operations and deprecations
+utest/                   125 pytest tests, 98% coverage
+atest/                   42 Robot tests, .graphql query files, and server/graphql_server.py
 .github/workflows/       ci.yml (4 jobs), release.yml (trusted publishing on v* tags)
 run_atest.sh             starts the server, runs the suites, stops it again
 ```
 
-24 keywords. Three names differ deliberately, following the MongoDB library: PyPI
+28 keywords. Three names differ deliberately, following the MongoDB library: PyPI
 `robotframework-graphql`, import name `GraphQLLibrary`, repository
 `robotframework-graphqllibrary`.
 
@@ -126,10 +127,18 @@ suites have to stay runnable on 6.1.1, the declared floor.
 
 ## Scope: what was deliberately left out
 
-Subscriptions, file uploads (the multipart request spec), request batching, persisted
-queries/APQ, and schema-introspection and deprecation assertions. These are named in the
-library docstring under "Beyond These Keywords", and `Execute Raw Request` is the escape
-hatch. They are the natural 1.x work once there is evidence anyone wants this. gql already
+Subscriptions, file uploads (the multipart request spec), request batching and persisted
+queries/APQ. These are named in the library docstring under "Beyond These Keywords", and
+`Execute Raw Request` is the escape hatch.
+
+Schema introspection was on this list and is now implemented, in `keywords/schema.py`. Two
+details there are deliberate and easy to break. Introspection omits deprecated fields unless
+the query asks with `fields(includeDeprecated: true)`, so dropping that argument would make
+`Get Deprecated Fields` answer with an empty list forever rather than fail. And only object
+and interface `fields` are requested: `inputFields(includeDeprecated:)` and
+`enumValues(includeDeprecated:)` are later spec additions that older servers reject outright,
+which would turn every keyword in the module into an error against them. Deprecated input
+fields and enum values are therefore not reported, and the docstring says so. They are the natural 1.x work once there is evidence anyone wants this. gql already
 supports uploads, batching and every WebSocket sub-protocol, so adding them is mostly keyword
 surface rather than protocol work.
 

@@ -41,6 +41,7 @@ queries from real `.graphql` files.
   operators, as in `Get Graphql Data    ${response}    user.name    ==    Alice`
 - Error assertions that speak GraphQL: `path`, `extensions.code`, partial data
 - A retrying `Check Query Result` for read models that are filled in asynchronously
+- Schema introspection: list an endpoint's queries and mutations, and assert on deprecations
 - Session pool with aliases, sharing one connection pool per endpoint
 - Interop: an existing `requests.Session` can be handed in, so cookies and adapters
   configured elsewhere are reused
@@ -122,8 +123,9 @@ did not open it.
 
 ## Deliberately not wrapped
 
-Subscriptions, file uploads, request batching, persisted queries, and schema introspection
-assertions. `Execute Raw Request` sends an operation with no checking at all, for cases this
+Subscriptions, file uploads, request batching and persisted queries. Schema introspection
+covers object and interface fields, so deprecated input fields and enum values are not
+reported. `Execute Raw Request` sends an operation with no checking at all, for cases this
 library does not model.
 
 ## Development
