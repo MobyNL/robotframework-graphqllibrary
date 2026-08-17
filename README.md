@@ -42,6 +42,9 @@ queries from real `.graphql` files.
 - Error assertions that speak GraphQL: `path`, `extensions.code`, partial data
 - A retrying `Check Query Result` for read models that are filled in asynchronously
 - Schema introspection: list an endpoint's queries and mutations, and assert on deprecations
+- Queries checked against the endpoint's own schema before they are sent, so a misspelled field
+  is reported with its line and column instead of being sent and rejected
+- Schema drift detection: snapshot the schema as reviewable SDL and assert nothing broke since
 - Session pool with aliases, sharing one connection pool per endpoint
 - Interop: an existing `requests.Session` can be handed in, so cookies and adapters
   configured elsewhere are reused
@@ -71,6 +74,17 @@ Library    GraphQLLibrary    query_path=${CURDIR}/queries
 
 - `query_path`: directory that queries given by file name are looked up in.
 - `validate_queries`: whether queries are checked locally before they are sent. Default true.
+- `validate_against_schema`: whether queries are also checked against the endpoint's own schema
+  before they are sent. Default true. The schema is introspected once per endpoint and held. Where
+  introspection is disabled the check is skipped with a warning rather than failing, so a server
+  that will not describe itself is still testable.
+
+```robotframework
+# Caught before any request is sent, naming the line and column:
+${response}    Execute Query    { user(id: "1") { nickname } }
+# ValueError: The query does not match the schema. 1 problem(s) found:
+# - Cannot query field 'nickname' on type 'User'. Did you mean 'name'? (line 1, column 19)
+```
 
 ## Usage
 
@@ -125,8 +139,9 @@ did not open it.
 
 Subscriptions, file uploads, request batching and persisted queries. Schema introspection
 covers object and interface fields, so deprecated input fields and enum values are not
-reported. `Execute Raw Request` sends an operation with no checking at all, for cases this
-library does not model.
+reported. Drift detection compares types and fields, not the built-in directives.
+`Execute Raw Request` sends an operation with no checking at all, for cases this library does
+not model.
 
 ## Development
 

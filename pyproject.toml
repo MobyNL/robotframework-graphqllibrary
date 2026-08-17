@@ -5,7 +5,7 @@
 # on. CI installs Poetry with `pipx install poetry`, so it is already on 2.x.
 requires-poetry = ">=2.0"
 name = "robotframework-graphql"
-version = "0.1.0"
+version = "0.2.0"
 description = "GraphQL test library for Robot Framework."
 authors = ["MobyNl <markmoberts@gmail.com>"]
 readme = "README.md"
@@ -54,9 +54,12 @@ robotframework-assertion-engine = ">=3.0.3,<6"
 # websockets are deliberately not pulled in. The cap is on the major because gql's beta
 # lines run for years and are not depended on here.
 gql = {version = ">=4.0,<5", extras = ["requests"]}
-# Arrives transitively through gql, but declared because this library calls `parse` and
-# `validate` directly. Capped below 3.3, which is still in release candidates and which both
-# gql and sgqlc also cap.
+# Arrives transitively through gql, but declared because this library uses it directly and for
+# more than parsing: `parse` and `validate` for checking queries, `get_introspection_query` and
+# `build_client_schema` for reading a schema, and `print_schema`, `build_schema`,
+# `find_breaking_changes` and `find_dangerous_changes` for the drift keywords. Until 0.2.0 this
+# comment claimed `validate` was called when it was not; it is now.
+# Capped below 3.3, which is still in release candidates and which both gql and sgqlc also cap.
 graphql-core = ">=3.2,<3.3"
 
 [tool.poetry.group.dev.dependencies]
