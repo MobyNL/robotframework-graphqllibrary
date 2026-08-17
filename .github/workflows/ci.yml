@@ -35,19 +35,29 @@ jobs:
         run: poetry run pytest utest --cov --cov-report=term-missing
 
   unit-test-robot-framework-range:
-    # The lock file pins one Robot Framework. These are the ends of the declared range, and
-    # the pairings pip would pick, installed explicitly.
+    # The lock file pins one Robot Framework and one assertion engine. These are the ends of
+    # both declared ranges, installed explicitly.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
+          # The true floor of both ranges. pip would never pick assertion engine 3.0.3 on its
+          # own - given Robot Framework 6.1.1 it resolves to the newest 5.x - so the declared
+          # floor is only ever exercised by pinning it here. 3.0.3 caps pythonlibcore below
+          # 5.0.0, which is why that one is pinned too rather than left to resolve.
+          - robotframework: "6.1.1"
+            assertionengine: "3.0.3"
+            pythonlibcore: "4.6.0"
           - robotframework: "6.1.1"
             assertionengine: "5.0.0"
+            pythonlibcore: ""
           - robotframework: "7.3.2"
             assertionengine: "5.0.1"
+            pythonlibcore: ""
           - robotframework: "7.4.2"
             assertionengine: "5.0.1"
+            pythonlibcore: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -56,9 +66,12 @@ jobs:
       - name: Install
         run: |
           pip install "gql[requests]>=4.0,<5" "graphql-core>=3.2,<3.3" \
-            robotframework-pythonlibcore pytest pytest-cov responses
+            pytest pytest-cov responses
+          # One resolve, so a pin that constrains another package cannot be silently
+          # downgraded by a later install step.
           pip install "robotframework==${{ matrix.robotframework }}" \
-            "robotframework-assertion-engine==${{ matrix.assertionengine }}"
+            "robotframework-assertion-engine==${{ matrix.assertionengine }}" \
+            "robotframework-pythonlibcore${{ matrix.pythonlibcore && format('=={0}', matrix.pythonlibcore) || '>=4.6,<5' }}"
       - name: Unit tests
         run: PYTHONPATH=. pytest utest
       - name: Libdoc

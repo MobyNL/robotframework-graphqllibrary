@@ -28,14 +28,21 @@ packages = [
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.15"
-# Robot Framework 6.1.1 is the floor, imposed by the assertion engine below rather than by
-# anything this library imports from `robot` itself. `Secret` is imported conditionally, so
-# 6.1.1 through 7.x are all supported from one code path.
+# Robot Framework 6.1.1 is the floor, and nothing imposes it: this library imports nothing
+# from `robot` that needs it, and assertion engine 3.0.3 below would allow 5.0.1. It is the
+# oldest version the suites are actually run against, so it is the oldest that is claimed.
+# `Secret` is imported conditionally, so 6.1.1 through 7.x are supported from one code path.
 robotframework = ">=6.1.1,<8"
+# Capped below 5.0.0 by assertion engine 3.0.3, which is the floor below.
 robotframework-pythonlibcore = ">=4.6,<5"
-# 5.x is the first line that requires Robot Framework 6.1.1, which matches the floor above.
-# `verify_assertion` and `AssertionOperator` are stable across the line.
-robotframework-assertion-engine = ">=5.0,<6"
+# Only `verify_assertion` and `AssertionOperator` are imported from here, and both are
+# unchanged from 3.0.3 through 5.x - the `verify_assertion` signature is identical across that
+# range. The floor is therefore set by the API this library actually uses, rather than by a
+# preference for the newest line, so the library can be installed alongside a suite already
+# pinned to an older assertion engine. The cap stays on the major, where a breaking change to
+# those two names would land. The floor pairing is exercised in CI, since pip resolves to the
+# newest 5.x on its own and would never reach 3.0.3.
+robotframework-assertion-engine = ">=3.0.3,<6"
 # 4.0 is the floor: it is where `gql()` started returning a `GraphQLRequest` instead of a
 # `DocumentNode`, which is the object this library passes around. Transports are extras, so
 # the `requests` marker keeps the dependency tree to the sync HTTP path only - aiohttp and
