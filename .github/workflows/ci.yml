@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Nightly, so the unpinned job below reports a break in a dependency before a release does.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  lint-and-unit-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install Poetry
+        run: pipx install poetry
+      - name: Install
+        run: poetry install
+      - name: Ruff
+        run: poetry run ruff check .
+      - name: Robocop
+        run: poetry run robocop check atest
+      - name: Mypy
+        run: poetry run mypy
+      - name: Unit tests
+        run: poetry run pytest utest --cov --cov-report=term-missing
+
+  unit-test-robot-framework-range:
+    # The lock file pins one Robot Framework. These are the ends of the declared range, and
+    # the pairings pip would pick, installed explicitly.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - robotframework: "6.1.1"
+            assertionengine: "5.0.0"
+          - robotframework: "7.3.2"
+            assertionengine: "5.0.1"
+          - robotframework: "7.4.2"
+            assertionengine: "5.0.1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install "gql[requests]>=4.0,<5" "graphql-core>=3.2,<3.3" \
+            robotframework-pythonlibcore pytest pytest-cov responses
+          pip install "robotframework==${{ matrix.robotframework }}" \
+            "robotframework-assertion-engine==${{ matrix.assertionengine }}"
+      - name: Unit tests
+        run: PYTHONPATH=. pytest utest
+      - name: Libdoc
+        # The keyword documentation is the library's only manual, and libdoc is the one check
+        # that every annotation is still one this Robot Framework version can convert. Unit
+        # tests calling the keywords as Python methods would not notice.
+        run: PYTHONPATH=. python -m robot.libdoc GraphQLLibrary libdoc-check.html
+
+  unit-test-latest-unpinned:
+    # The counterweight to the upper bounds: installs past them and reports, without failing
+    # the build. Nightly only, since a break here is not the contributor's doing.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: |
+          pip install "gql[requests]" graphql-core robotframework-pythonlibcore \
+            pytest pytest-cov responses
+          pip install --upgrade --no-deps robotframework robotframework-assertion-engine
+      - name: Unit tests
+        run: PYTHONPATH=. pytest utest
+      - name: Libdoc
+        run: PYTHONPATH=. python -m robot.libdoc GraphQLLibrary libdoc-check.html
+
+  acceptance-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Poetry
+        run: pipx install poetry
+      - name: Install
+        run: poetry install
+      - name: Acceptance tests
+        # The server is part of the repository and needs nothing but graphql-core, so there is
+        # no container to wait for.
+        run: ./run_atest.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atest-results
+          path: atest-results

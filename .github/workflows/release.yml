@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Trusted publishing, so no token is stored in the repository.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Poetry
+        run: pipx install poetry
+      - name: Check the tag against the declared version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          declared="$(poetry version --short)"
+          if [ "$tag" != "$declared" ]; then
+            echo "Tag $tag does not match the version in pyproject.toml ($declared)." >&2
+            exit 1
+          fi
+      - name: Build
+        run: poetry build
+      - uses: pypa/gh-action-pypi-publish@release/v1
