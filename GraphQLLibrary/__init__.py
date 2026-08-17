@@ -7,6 +7,7 @@ from GraphQLLibrary.errors import GraphQLResponseError
 from GraphQLLibrary.keywords.connection import ConnectionKeywords
 from GraphQLLibrary.keywords.query import QueryKeywords
 from GraphQLLibrary.keywords.response import ResponseKeywords
+from GraphQLLibrary.keywords.schema import SchemaKeywords
 from GraphQLLibrary.session_pool import SessionManager
 
 try:
@@ -31,6 +32,7 @@ class GraphQLLibrary(DynamicCore):
     - Writing Queries
     - Errors
     - Sessions
+    - Schema
     - Beyond These Keywords
 
     == Introduction ==
@@ -108,11 +110,25 @@ class GraphQLLibrary(DynamicCore):
     `Create Graphql Session` also accepts an existing ``requests.Session``, which is the way
     to share cookies or authentication with HTTP calls made elsewhere in a suite.
 
+    == Schema ==
+
+    `Get Schema Queries` and `Get Schema Mutations` list what an endpoint offers, which is what
+    the GraphiQL or Apollo Sandbox page at a ``/graphql`` URL shows. `Get Deprecated Fields`
+    and `Field Should Not Be Deprecated` cover the deprecations, which is the part worth
+    asserting on: a deprecation is the warning that a field is going away, and it only helps if
+    something reads it.
+
+    All four introspect on each call and cache nothing, since a suite checking a schema is
+    usually checking a deployment that just changed. Servers commonly disable introspection
+    outside development, Apollo Server among them; the keywords fail saying so rather than
+    reporting an empty schema.
+
     == Beyond These Keywords ==
 
-    Deliberately not wrapped: subscriptions, file uploads, request batching, persisted
-    queries, and schema introspection assertions. `Execute Raw Request` sends an operation
-    with no checking at all, for cases this library does not model.
+    Deliberately not wrapped: subscriptions, file uploads, request batching and persisted
+    queries. Introspection covers object and interface fields only, so deprecated input fields
+    and enum values are not reported. `Execute Raw Request` sends an operation with no checking
+    at all, for cases this library does not model.
     """
 
     ROBOT_LIBRARY_SCOPE = "GLOBAL"
@@ -135,9 +151,11 @@ class GraphQLLibrary(DynamicCore):
         """
         self.session_manager = SessionManager()
         connection = ConnectionKeywords(self.session_manager)
+        query = QueryKeywords(self.session_manager, connection, query_path, validate_queries)
         libraries = [
             connection,
-            QueryKeywords(self.session_manager, connection, query_path, validate_queries),
+            query,
             ResponseKeywords(),
+            SchemaKeywords(query),
         ]
         DynamicCore.__init__(self, libraries)
