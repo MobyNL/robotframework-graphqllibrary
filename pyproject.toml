@@ -66,10 +66,12 @@ responses = "^0.25.3"
 ruff = "^0.12.4"
 mypy = "^1.18.2"
 robotframework-robocop = "^6.5.1"
-# Robocop 6.13.0 imports `click` in `run.py` and `files.py` without declaring it, and its
-# `typer-slim` dependency no longer pulls click in either. It is declared here so `robocop check`
-# works from a clean install; until this project dropped black, black's own click dependency was
-# what happened to satisfy it.
+# Robocop on the 6.x line imports `click` in `run.py` and `files.py` without declaring it, and
+# its `typer-slim` dependency does not pull click in either. Reproduced on 6.13.0 in a venv
+# holding nothing but robocop: `robocop check` dies with ModuleNotFoundError. Until this project
+# dropped black, black's own click dependency was what happened to satisfy it, which is why the
+# break only surfaced then. Fixed upstream on the 8.x line, which needs no click at all - so this
+# entry goes away when the robocop cap moves to ^8.
 click = "^8.1"
 robotframework-requests = "^0.9.7"
 

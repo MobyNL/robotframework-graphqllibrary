@@ -17,3 +17,7 @@ report.html
 output.xml
 
 .vscode/
+
+# Adoption notes for a specific internal project: names endpoints and account variables that
+# do not belong in a public repository.
+docs/foodcoach-app-automation-migration.md
