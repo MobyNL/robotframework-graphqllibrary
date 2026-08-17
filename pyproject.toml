@@ -1,0 +1,115 @@
+[tool.poetry]
+name = "robotframework-graphql"
+version = "0.1.0"
+description = "GraphQL test library for Robot Framework."
+authors = ["MobyNl <markmoberts@gmail.com>"]
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/MobyNl/robotframework-graphqllibrary"
+homepage = "https://github.com/MobyNl/robotframework-graphqllibrary"
+keywords = ["robotframework", "graphql", "testing", "library", "api"]
+classifiers = [
+    "Framework :: Robot Framework",
+    "Framework :: Robot Framework :: Library",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent"
+]
+package-mode = true
+
+packages = [
+    { include = "GraphQLLibrary" }
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.15"
+# Robot Framework 6.1.1 is the floor, imposed by the assertion engine below rather than by
+# anything this library imports from `robot` itself. `Secret` is imported conditionally, so
+# 6.1.1 through 7.x are all supported from one code path.
+robotframework = ">=6.1.1,<8"
+robotframework-pythonlibcore = ">=4.6,<5"
+# 5.x is the first line that requires Robot Framework 6.1.1, which matches the floor above.
+# `verify_assertion` and `AssertionOperator` are stable across the line.
+robotframework-assertion-engine = ">=5.0,<6"
+# 4.0 is the floor: it is where `gql()` started returning a `GraphQLRequest` instead of a
+# `DocumentNode`, which is the object this library passes around. Transports are extras, so
+# the `requests` marker keeps the dependency tree to the sync HTTP path only - aiohttp and
+# websockets are deliberately not pulled in. The cap is on the major because gql's beta
+# lines run for years and are not depended on here.
+gql = {version = ">=4.0,<5", extras = ["requests"]}
+# Arrives transitively through gql, but declared because this library calls `parse` and
+# `validate` directly. Capped below 3.3, which is still in release candidates and which both
+# gql and sgqlc also cap.
+graphql-core = ">=3.2,<3.3"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.1"
+pytest-mock = "^3.14.1"
+pytest-cov = "^6.2.1"
+responses = "^0.25.3"
+ruff = "^0.12.4"
+black = "^25.1.0"
+mypy = "^1.18.2"
+robotframework-robocop = "^6.5.1"
+robotframework-requests = "^0.9.7"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+target-version = "py310"  # the oldest Python the package supports
+line-length = 120
+
+[tool.ruff.lint]
+extend-select = ["I"]  # imports
+ignore = ["E731"]  # lambda assignment
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+order-by-type = false
+
+[tool.mypy]
+python_version = "3.10"
+files = ["GraphQLLibrary"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[[tool.mypy.overrides]]
+# None of these ship type information.
+module = ["assertionengine.*", "robotlibcore.*", "robot.*", "gql.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["utest"]
+
+[tool.coverage.run]
+branch = true
+source = ["GraphQLLibrary"]
+
+[tool.robocop.lint]
+ignore = [
+    "missing-doc-test-case",
+    "missing-doc-suite",
+    # Both rules push the suites onto Robot Framework 7 syntax (`VAR` in place of
+    # `Set Variable` and `Create Dictionary`). The suites have to stay runnable on the
+    # oldest Robot Framework this library supports, which is 6.1.1.
+    "deprecated-statement",
+    "replace-create-with-var",
+    "replace-set-variable-with-var",
+]
+configure = [
+    "line-too-long.line_length=140",
+    "too-many-arguments.max_args=10",
+]
+
+[tool.robot]
+log-level = "DEBUG"
