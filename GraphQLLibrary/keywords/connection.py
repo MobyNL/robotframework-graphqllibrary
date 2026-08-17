@@ -117,6 +117,7 @@ class ConnectionKeywords:
             client=client,
             headers=all_headers,
             owns_http_session=http_session is None,
+            cache_key=cache_key,
         )
         self.session_manager.add_to_session_pool(session)
         self.session_manager.active_alias = alias
