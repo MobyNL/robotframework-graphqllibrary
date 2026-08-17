@@ -1,4 +1,9 @@
 [tool.poetry]
+# The lock file is format 2.1, which Poetry 1.x cannot read. Poetry 2.x enforces this key;
+# Poetry 1.x does not understand it and rejects the file as invalid, naming `requires-poetry` -
+# not the message written here, but a searchable pointer rather than a lock-format error further
+# on. CI installs Poetry with `pipx install poetry`, so it is already on 2.x.
+requires-poetry = ">=2.0"
 name = "robotframework-graphql"
 version = "0.1.0"
 description = "GraphQL test library for Robot Framework."
@@ -56,7 +61,6 @@ graphql-core = ">=3.2,<3.3"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.1"
-pytest-mock = "^3.14.1"
 pytest-cov = "^6.2.1"
 responses = "^0.25.3"
 ruff = "^0.12.4"
