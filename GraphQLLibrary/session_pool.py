@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from gql import Client
+from graphql import GraphQLSchema
 from robot.api import logger
 
 
@@ -16,6 +17,20 @@ class GraphQLSession:
     owns_http_session: bool = True
     """False when the caller supplied their own ``requests.Session``, which this library
     must then leave open on teardown. See `SessionManager.close_client`."""
+    cache_key: Any = None
+    """The connection parameters this session was built from, or None when the caller supplied
+    their own ``requests.Session``. Shared with the client cache, so sessions against the same
+    endpoint share one introspected schema."""
+    schema: Optional[GraphQLSchema] = None
+    """Schema held for this session alone, used only when ``cache_key`` is None and the shared
+    cache therefore cannot be."""
+    schema_attempts: int = 0
+    """How often introspection has been tried and failed for this session. Bounded, so a server
+    that will not describe itself is not asked before every single query."""
+    schema_unavailable: bool = False
+    """True while automatic validation should not try introspecting again. Cleared after a
+    successful operation until ``schema_attempts`` runs out: the first query on a session is
+    often the login, and a schema behind authentication is unreadable until that has happened."""
 
     def execute(self, request: Any) -> Any:
         """Send one request over the connection opened when this session was created.
@@ -42,6 +57,31 @@ class SessionManager:
         self.session_pool: dict[str, GraphQLSession] = {}
         self.active_alias: str = "default"
         self.client_cache: dict[Any, Client] = {}
+        # Keyed the same way as client_cache, so one introspection covers every alias against
+        # the same endpoint with the same headers. Introspecting a real schema costs hundreds of
+        # kilobytes, so this is what makes schema-aware validation usable at all.
+        self.schema_cache: dict[Any, GraphQLSchema] = {}
+
+    def get_cached_schema(self, session: GraphQLSession) -> Optional[GraphQLSchema]:
+        """Return the schema held for this session, or None when nothing is cached yet."""
+        if session.cache_key is None:
+            return session.schema
+        return self.schema_cache.get(session.cache_key)
+
+    def cache_schema(self, session: GraphQLSession, schema: GraphQLSchema) -> None:
+        """Hold a schema for every session sharing this one's connection parameters."""
+        if session.cache_key is None:
+            session.schema = schema
+        else:
+            self.schema_cache[session.cache_key] = schema
+
+    def forget_schema(self, session: GraphQLSession) -> None:
+        """Drop the cached schema so the next caller introspects again."""
+        session.schema = None
+        session.schema_unavailable = False
+        session.schema_attempts = 0
+        if session.cache_key is not None:
+            self.schema_cache.pop(session.cache_key, None)
 
     def get_or_create_client(self, cache_key: Any, create_client: Callable[[], Client]) -> Client:
         """
@@ -140,3 +180,6 @@ class SessionManager:
         for key, cached in list(self.client_cache.items()):
             if cached is client:
                 del self.client_cache[key]
+                # The schema is cached under the same key. Leaving it behind would hand a stale
+                # schema to a session recreated against the same endpoint later.
+                self.schema_cache.pop(key, None)

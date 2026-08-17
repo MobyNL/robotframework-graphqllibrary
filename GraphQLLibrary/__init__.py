@@ -30,6 +30,7 @@ class GraphQLLibrary(DynamicCore):
     - Usage
     - Why Not Plain HTTP Keywords
     - Writing Queries
+    - Validating Against The Schema
     - Errors
     - Sessions
     - Schema
@@ -95,10 +96,37 @@ class GraphQLLibrary(DynamicCore):
     Note that the query reaching the server is the parsed document printed back out, so it
     arrives in the standard layout rather than exactly as it was written.
 
+    == Validating Against The Schema ==
+
+    Parsing catches a query that is not GraphQL. It cannot catch a query that is valid GraphQL
+    but wrong for this server: a misspelled field, an argument that does not exist, a selection
+    missing its subfields. Checking that needs the schema, and validation against a schema is
+    part of the GraphQL specification rather than an extra, so `graphql-core` implements it.
+
+    Every keyword that sends an operation therefore checks it against the endpoint's own schema
+    first, and fails with each problem and its line and column before the request goes out. The
+    schema is read once per endpoint by introspection and then held, so this costs one round
+    trip rather than one per query. `Refresh Graphql Schema` drops it after a deployment.
+
+    Two things about this are worth knowing:
+
+    - *A server that will not describe itself is not a failure.* Introspection is commonly
+      disabled outside development, and it is sometimes behind authentication, so the first
+      query on a session -- often the login itself -- cannot read it. When the schema cannot be
+      read the check is skipped with a warning, and tried once more after an operation succeeds,
+      which is what makes a login-then-query suite work. It is never retried indefinitely.
+    - *`Query Should Be Valid Against Schema` fails instead*, because there the schema is what
+      was asked for. Use it where a schema check must be a test rather than a precaution, or
+      where ``validate_against_schema=False`` was passed on import.
+
+    `Validate Query` remains a syntax-only check that contacts nothing.
+
     == Errors ==
 
     Failures raise `GraphQLResponseError`, whose message lists every error with its ``path``
-    and its ``extensions.code`` where the server sent them.
+    and its ``extensions.code`` where the server sent them. A query rejected before it is sent,
+    whether by the parse or by the schema, raises ``ValueError``: nothing was sent, so there is
+    no response to report.
 
     == Sessions ==
 
@@ -118,9 +146,17 @@ class GraphQLLibrary(DynamicCore):
     asserting on: a deprecation is the warning that a field is going away, and it only helps if
     something reads it.
 
-    All four introspect on each call and cache nothing, since a suite checking a schema is
-    usually checking a deployment that just changed. Servers commonly disable introspection
-    outside development, Apollo Server among them; the keywords fail saying so rather than
+    `Save Schema Snapshot` writes the schema as SDL, and `Get Schema Breaking Changes`,
+    `Get Schema Dangerous Changes` and `Schema Should Have No Breaking Changes` compare a live
+    endpoint against one. SDL rather than the introspection JSON, because a committed snapshot
+    is only worth having if the diff is readable: a removed field then shows up in review, and
+    in CI, rather than as a puzzling test failure later. Breaking and dangerous are kept apart
+    because they are different questions -- a removed field breaks a query outright, while a
+    value added to an enum only breaks a suite that switches on it.
+
+    The schema is introspected once per endpoint and held, because a real one runs to hundreds
+    of kilobytes. `Refresh Graphql Schema` drops it. Servers commonly disable introspection
+    outside development, Apollo Server among them; these keywords fail saying so rather than
     reporting an empty schema.
 
     == Beyond These Keywords ==
@@ -134,7 +170,12 @@ class GraphQLLibrary(DynamicCore):
     ROBOT_LIBRARY_SCOPE = "GLOBAL"
     ROBOT_LIBRARY_VERSION = __version__
 
-    def __init__(self, query_path: Optional[str] = None, validate_queries: bool = True) -> None:
+    def __init__(
+        self,
+        query_path: Optional[str] = None,
+        validate_queries: bool = True,
+        validate_against_schema: bool = True,
+    ) -> None:
         """Import the library.
 
         Arguments:
@@ -142,20 +183,27 @@ class GraphQLLibrary(DynamicCore):
           passed to a keyword still works without it; this only removes the repetition.
         - ``validate_queries``: Whether queries are checked locally before they are sent, so a
           syntax error is reported with its line and column. Turning it off skips this
-          library's checks, including the one that `Execute Query` was not handed a mutation.
-          A query still has to parse: gql parses every document it sends, and reports a
-          syntax error in its own words.
+          library's checks, including the one that `Execute Query` was not handed a mutation
+          and the schema check below. A query still has to parse: gql parses every document it
+          sends, and reports a syntax error in its own words.
+        - ``validate_against_schema``: Whether queries are also checked against the endpoint's
+          own schema before they are sent, so a field that does not exist is reported instead of
+          being sent and rejected. The schema is read by introspection once per endpoint and
+          then held. Where introspection is disabled the check is skipped with a warning rather
+          than failing, since a server that will not describe itself is a normal thing to test
+          against. Turn it off to stop looking at all.
 
         Robot Framework creates one instance per distinct set of import arguments, so
         importing with two different ``query_path`` values gives two separate session pools.
         """
         self.session_manager = SessionManager()
         connection = ConnectionKeywords(self.session_manager)
-        query = QueryKeywords(self.session_manager, connection, query_path, validate_queries)
         libraries = [
             connection,
-            query,
+            QueryKeywords(
+                self.session_manager, connection, query_path, validate_queries, validate_against_schema
+            ),
             ResponseKeywords(),
-            SchemaKeywords(query),
+            SchemaKeywords(self.session_manager, connection),
         ]
         DynamicCore.__init__(self, libraries)

@@ -5,7 +5,15 @@ from typing import Any, Callable, Optional, Union
 from assertionengine import AssertionOperator, verify_assertion
 from gql import GraphQLRequest
 from gql.transport.exceptions import TransportQueryError
-from graphql import DocumentNode, GraphQLSyntaxError, OperationDefinitionNode, OperationType, parse
+from graphql import (
+    DocumentNode,
+    GraphQLSchema,
+    GraphQLSyntaxError,
+    OperationDefinitionNode,
+    OperationType,
+    parse,
+    validate,
+)
 from robot.api import logger
 from robot.api.deco import keyword
 from robot.libraries.BuiltIn import BuiltIn
@@ -14,9 +22,16 @@ from robot.utils import DotDict, timestr_to_secs
 from GraphQLLibrary.errors import GraphQLResponseError
 from GraphQLLibrary.keywords.connection import ConnectionKeywords
 from GraphQLLibrary.response import build_response, describe_errors, normalise_errors, resolve_path
-from GraphQLLibrary.session_pool import SessionManager
+from GraphQLLibrary.schema import describe_validation_errors, fetch_schema, SchemaUnavailable
+from GraphQLLibrary.session_pool import GraphQLSession, SessionManager
 
 QUERY_SUFFIXES = (".graphql", ".gql")
+
+# How often automatic validation introspects a session that refuses before it gives up. Two,
+# because the first query on a session is often the login and a schema behind authentication is
+# unreadable until that has run - but a server with introspection switched off should not be
+# asked before every query for the rest of the suite.
+MAX_SCHEMA_ATTEMPTS = 2
 
 
 class QueryKeywords:
@@ -30,6 +45,7 @@ class QueryKeywords:
         connection: ConnectionKeywords,
         query_path: Optional[str] = None,
         validate_queries: bool = True,
+        validate_against_schema: bool = True,
     ) -> None:
         """
         Initializes the query keywords.
@@ -39,11 +55,14 @@ class QueryKeywords:
         - ``connection``: Resolves aliases to sessions.
         - ``query_path``: Directory queries given by file name are looked up in.
         - ``validate_queries``: Whether queries are parsed before they are sent.
+        - ``validate_against_schema``: Whether queries are also checked against the endpoint's
+          schema before they are sent.
         """
         self.session_manager = session_manager
         self.connection = connection
         self.query_path = Path(query_path) if query_path else None
         self.validate_queries = validate_queries
+        self.validate_against_schema = validate_against_schema
 
     # ----------------------------------------------------------------- #
     # Internals
@@ -133,6 +152,7 @@ class QueryKeywords:
     ) -> DotDict:
         """Send one operation and turn the response into the object suites work with."""
         query_text = self._resolve_query(query)
+        document: Optional[DocumentNode] = None
         if self.validate_queries or expected_type is not None or operation_name is not None:
             document = self._parse(query_text)
             operation = self._select_operation(document, operation_name)
@@ -143,6 +163,10 @@ class QueryKeywords:
                 )
 
         session = self.connection.get_session(alias)
+        # After the session is resolved, because the schema is read from the endpoint, and only
+        # when local checking is on at all: validate_queries=False means do nothing locally.
+        if document is not None and self.validate_queries:
+            self._validate_with_schema_if_enabled(session, document)
         request = GraphQLRequest(query_text, variable_values=variables, operation_name=operation_name)
         logger.debug(f"Executing on '{session.alias}' ({session.url}):\n{query_text}")
 
@@ -155,6 +179,9 @@ class QueryKeywords:
             # is on the exception, so nothing is lost by rebuilding it here.
             response = build_response(error.data, error.errors, error.extensions)
 
+        if not response.errors:
+            self._reconsider_schema_after_success(session)
+
         if response.errors and not expect_errors:
             raise GraphQLResponseError(
                 f"The GraphQL response contains {len(response.errors)} error(s):\n"
@@ -165,6 +192,57 @@ class QueryKeywords:
                 extensions=response.extensions,
             )
         return response
+
+    def _validate_against_schema(self, schema: GraphQLSchema, document: DocumentNode) -> None:
+        """Check a parsed document against a schema, failing with every error it found."""
+        errors = validate(schema, document)
+        if errors:
+            raise ValueError(
+                f"The query does not match the schema. {len(errors)} problem(s) found:\n"
+                f"{describe_validation_errors(errors)}"
+            )
+
+    def _validate_with_schema_if_enabled(self, session: GraphQLSession, document: DocumentNode) -> None:
+        """Validate against the schema when that is switched on, skipping if it cannot be read.
+
+        A server with introspection disabled is a normal thing to test against, so it must not
+        turn every query into a failure. `Query Should Be Valid Against Schema` fails instead,
+        because there the schema is the point of the call.
+        """
+        if not self.validate_against_schema or session.schema_unavailable:
+            return
+        try:
+            schema = fetch_schema(self.session_manager, session)
+        except SchemaUnavailable as error:
+            session.schema_attempts += 1
+            session.schema_unavailable = True
+            remaining = MAX_SCHEMA_ATTEMPTS - session.schema_attempts
+            retry = (
+                " It will be tried once more after an operation succeeds, in case the schema is "
+                "behind authentication this session has not completed yet."
+                if remaining > 0
+                else ""
+            )
+            logger.warn(
+                f"Queries on '{session.alias}' are not being checked against the schema. {error}{retry}\n"
+                f"Pass validate_against_schema=False on import to stop looking, or use "
+                f"`Query Should Be Valid Against Schema` where a schema is required."
+            )
+            return
+        self._validate_against_schema(schema, document)
+
+    def _reconsider_schema_after_success(self, session: GraphQLSession) -> None:
+        """Allow one more introspection attempt once an operation has worked.
+
+        The first query on a session is very often the login itself, and an endpoint that keeps
+        introspection behind authentication answers 401 until that has run. Latching on the first
+        failure would therefore leave validation off for the whole suite, exactly where it is
+        wanted. Attempts are capped so a server that genuinely refuses introspection is asked
+        twice, not before every query.
+        """
+        if not session.schema_unavailable or session.schema_attempts >= MAX_SCHEMA_ATTEMPTS:
+            return
+        session.schema_unavailable = False
 
     def _retry_until_no_assertion_error(self, check: Callable[[], None], retry_timeout: str, retry_pause: str) -> None:
         """
@@ -302,7 +380,11 @@ class QueryKeywords:
 
     @keyword
     def validate_query(self, query: Union[str, list[str]]) -> str:
-        """Parse a query without sending it, failing on a syntax error.
+        """Check that a query parses, without sending anything and without a schema.
+
+        This is a syntax check only. It contacts no server, so it cannot know whether the fields
+        the query selects exist: a query naming a field the schema does not have passes here.
+        Use `Query Should Be Valid Against Schema` for that.
 
         The failure names the line and column, which a server's error message usually does
         not. Use it on queries built at runtime, or as a check over the query files a suite
@@ -321,6 +403,63 @@ class QueryKeywords:
         query_text = self._resolve_query(query)
         self._parse(query_text)
         return query_text
+
+    @keyword
+    def query_should_be_valid_against_schema(
+        self,
+        query: Union[str, list[str]],
+        alias: Optional[str] = None,
+        operation_name: Optional[str] = None,
+    ) -> None:
+        """Check a query against the endpoint's schema without sending the query itself.
+
+        This is what `Validate Query` cannot do: catch a field that does not exist, an argument
+        that is misspelled, or a selection that is missing its subfields, before any request goes
+        out. The schema is read from the endpoint by introspection once and then held, so
+        checking many queries costs one round trip.
+
+        Queries executed through `Execute Query` and `Execute Mutation` are already checked this
+        way unless ``validate_against_schema=False`` was passed on import. Use this keyword when
+        that is switched off, or to check a query a suite never sends.
+
+        Unlike the automatic check, this keyword *fails* when the schema cannot be read, because
+        a schema is what it was asked for. Automatic validation warns and carries on instead.
+
+        Arguments:
+        - ``query``: Query text, a ``.graphql`` file name, or a list of lines.
+        - ``alias``: Session whose schema to check against. Defaults to the active session.
+        - ``operation_name``: Which operation to check, when the document holds several.
+
+        Raises: ``ValueError`` when the query does not match the schema, listing every problem
+        with its line and column, or when the query cannot be parsed.
+        `GraphQLLibrary.schema.SchemaUnavailable` when the schema cannot be read.
+
+        Example:
+        | Query Should Be Valid Against Schema    queries/get_user.graphql
+        """
+        document = self._parse(self._resolve_query(query))
+        if operation_name is not None:
+            self._select_operation(document, operation_name)
+        session = self.connection.get_session(alias)
+        self._validate_against_schema(fetch_schema(self.session_manager, session), document)
+
+    @keyword
+    def refresh_graphql_schema(self, alias: Optional[str] = None) -> None:
+        """Drop the schema held for a session so the next check introspects again.
+
+        The schema is read once per endpoint and kept, which is what makes validation affordable.
+        Call this after a deployment that changed the schema mid-suite, or a suite will keep
+        checking against the schema as it was.
+
+        Arguments:
+        - ``alias``: Session whose schema to drop. Defaults to the active session.
+
+        Example:
+        | Refresh Graphql Schema
+        """
+        session = self.connection.get_session(alias)
+        self.session_manager.forget_schema(session)
+        logger.info(f"Dropped the cached schema for '{session.alias}'.")
 
     @keyword
     def get_query_operations(self, query: Union[str, list[str]]) -> list[str]:

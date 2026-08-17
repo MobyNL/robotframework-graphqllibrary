@@ -120,7 +120,9 @@ class TestQuerySources:
 
     def test_a_query_can_be_given_as_a_file_name_under_the_query_path(self, mocked_responses, tmp_path):
         (tmp_path / "get_user.graphql").write_text(QUERY, encoding="utf-8")
-        library = GraphQLLibrary(query_path=str(tmp_path))
+        # Schema validation off for the same reason the shared fixture has it off: it would
+        # put an introspection request in front of the one this test reads back.
+        library = GraphQLLibrary(query_path=str(tmp_path), validate_against_schema=False)
         library.create_graphql_session(URL)
         reply(mocked_responses, data={"user": {"name": "Alice"}})
         library.execute_query("get_user.graphql")
