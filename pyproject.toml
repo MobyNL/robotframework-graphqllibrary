@@ -64,9 +64,13 @@ pytest = "^8.4.1"
 pytest-cov = "^6.2.1"
 responses = "^0.25.3"
 ruff = "^0.12.4"
-black = "^25.1.0"
 mypy = "^1.18.2"
 robotframework-robocop = "^6.5.1"
+# Robocop 6.13.0 imports `click` in `run.py` and `files.py` without declaring it, and its
+# `typer-slim` dependency no longer pulls click in either. It is declared here so `robocop check`
+# works from a clean install; until this project dropped black, black's own click dependency was
+# what happened to satisfy it.
+click = "^8.1"
 robotframework-requests = "^0.9.7"
 
 [build-system]
