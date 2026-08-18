@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The keyword documentation is now generated on publish and served per version, at
+  `/<version>/GraphQLLibraryKeywords.html`, with `/latest` and `/dev` alongside them and a
+  landing page listing everything. Reading the documentation for the version you have installed
+  no longer means reading the documentation for whatever is newest. The rendered page is no
+  longer committed to the repository: it records its own generation time, the path of the
+  machine that produced it and the Robot Framework and Python versions used, none of which
+  belongs in version control and all of which made a committed copy impossible to verify.
+
 ## [0.2.0] - 2026-08-17
 
 ### Added

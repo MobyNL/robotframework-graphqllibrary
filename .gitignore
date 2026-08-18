@@ -12,6 +12,10 @@ build/
 
 atest-results/
 libdoc-check.html
+# The keyword documentation is generated and published by the docs workflow, per version,
+# and never committed: a rendered libdoc page carries the generation time, the path of the
+# machine that made it and the Robot Framework and Python versions used.
+GraphQLLibraryKeywords.html
 log.html
 report.html
 output.xml

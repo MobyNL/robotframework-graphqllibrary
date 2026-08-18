@@ -1,0 +1,142 @@
+name: Documentation
+
+# The keyword documentation is generated from the library itself and published to the
+# gh-pages branch, one directory per released version plus /dev for the current main.
+#
+# It is not committed to the repository. A rendered libdoc page carries the generation
+# time, the absolute path of the machine that produced it and the Robot Framework and
+# Python versions used, so a committed copy cannot be compared against a fresh one
+# without normalising all of that away. Generating on publish means there is nothing
+# that can drift.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        # workflow_dispatch can only run a workflow that exists on the chosen ref, so the
+        # tags released before this workflow did cannot be dispatched directly. Naming one
+        # here publishes it: run the workflow from main with ref set to v0.1.0.
+        description: "Tag to publish instead of the current main, for example v0.1.0"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  # Publishing rewrites a shared branch, so two runs must not do it at once.
+  group: docs
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # Only this job writes, and only to the gh-pages branch.
+      contents: write
+    steps:
+      - name: Work out what is being published
+        id: target
+        run: |
+          requested="${{ inputs.ref }}"
+          if [ -n "$requested" ]; then
+            # A backfill of an older tag. Its version is the tag without the v.
+            case "$requested" in
+              v*) ;;
+              *) echo "The ref input has to be a version tag, for example v0.1.0." >&2; exit 1 ;;
+            esac
+            echo "ref=$requested" >> "$GITHUB_OUTPUT"
+            echo "path=${requested#v}" >> "$GITHUB_OUTPUT"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "path=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "path=dev" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          # Tags are needed so a backfilled ref can be checked out at all.
+          fetch-depth: 0
+          ref: ${{ steps.target.outputs.ref }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install
+        run: poetry install
+
+      - name: Generate the keyword documentation
+        run: poetry run python -m robot.libdoc GraphQLLibrary GraphQLLibraryKeywords.html
+
+      - name: Take the index builder from main
+        # An older tag has no tools/ of its own, and the page it renders is the same page
+        # regardless of which version's keywords are being documented.
+        if: ${{ inputs.ref != '' }}
+        run: |
+          git fetch origin main --depth 1
+          git checkout FETCH_HEAD -- tools/build_docs_index.py
+
+      - name: Check out the published site
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin gh-pages; then
+            git fetch origin gh-pages --depth 1
+            git worktree add site FETCH_HEAD
+          else
+            # First publish: start the branch with no history of its own.
+            git worktree add --detach site
+            git -C site checkout --orphan gh-pages
+            git -C site rm -rf . --quiet || true
+          fi
+
+      - name: Add this version to the site
+        run: |
+          set -eu
+          path="${{ steps.target.outputs.path }}"
+          mkdir -p "site/${path}"
+          cp GraphQLLibraryKeywords.html "site/${path}/GraphQLLibraryKeywords.html"
+
+          # GitHub Pages otherwise runs the site through Jekyll, which drops directories
+          # whose names begin with an underscore and needs no help here regardless.
+          touch site/.nojekyll
+
+          if [ "${{ steps.target.outputs.release }}" = "true" ]; then
+            poetry run python tools/build_docs_index.py \
+              site/versions.json site/index.html --add "$path" --release
+          else
+            poetry run python tools/build_docs_index.py \
+              site/versions.json site/index.html --add "$path"
+          fi
+
+          # /latest and the bare path are only moved when the version just published is
+          # actually the newest release, so backfilling an old tag cannot demote them. The
+          # bare path is what the released package metadata points at, so it stays served.
+          if poetry run python tools/build_docs_index.py --is-latest "$path" site/versions.json; then
+            mkdir -p site/latest
+            cp GraphQLLibraryKeywords.html site/latest/GraphQLLibraryKeywords.html
+            cp GraphQLLibraryKeywords.html site/GraphQLLibraryKeywords.html
+          fi
+
+      - name: Publish
+        run: |
+          cd site
+          git add -A
+          if git diff --cached --quiet; then
+            echo "The published documentation is already up to date."
+            exit 0
+          fi
+          git commit -m "docs: publish ${{ steps.target.outputs.path }} from ${GITHUB_SHA}"
+          git push origin HEAD:gh-pages

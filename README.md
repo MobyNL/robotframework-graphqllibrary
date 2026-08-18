@@ -2,7 +2,7 @@
 
 GraphQL test library for Robot Framework.
 
-[Keyword documentation](https://mobynl.github.io/robotframework-graphqllibrary/)
+[Keyword documentation](https://mobynl.github.io/robotframework-graphqllibrary/), published per version.
 
 ## Why not just RequestsLibrary
 
@@ -142,6 +142,19 @@ covers object and interface fields, so deprecated input fields and enum values a
 reported. Drift detection compares types and fields, not the built-in directives.
 `Execute Raw Request` sends an operation with no checking at all, for cases this library does
 not model.
+
+## Documentation
+
+The [keyword documentation](https://mobynl.github.io/robotframework-graphqllibrary/) describes
+every keyword, its arguments and examples. It is published per version, so you can read the
+documentation for the version you actually have installed rather than for whatever is newest:
+
+- [all versions](https://mobynl.github.io/robotframework-graphqllibrary/) — start here
+- [latest release](https://mobynl.github.io/robotframework-graphqllibrary/latest/GraphQLLibraryKeywords.html)
+- [current main, unreleased](https://mobynl.github.io/robotframework-graphqllibrary/dev/GraphQLLibraryKeywords.html)
+
+The pages are generated from the library itself when a tag or a push to main is published, so
+they cannot drift from the code they document.
 
 ## Development
 

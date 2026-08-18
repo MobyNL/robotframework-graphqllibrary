@@ -148,9 +148,12 @@ surface rather than protocol work.
    asked for it. That is the honest state.
 2. First commit and a GitHub repository under `MobyNl`. Conventional commits, matching the
    MongoDB library.
-3. Publish keyword documentation via GitHub Pages: `GraphQLLibraryKeywords.html` and
-   `index.html` are committed, and `.nojekyll` is present because Jekyll would otherwise eat
-   libdoc's `{{ }}` sequences.
+3. Keyword documentation is published by `.github/workflows/docs.yml` to the `gh-pages`
+   branch, one directory per release plus `/dev` for main, with `tools/build_docs_index.py`
+   rendering the landing page. Nothing is committed to `main`, so the pages cannot drift from
+   the code. GitHub Pages has to be set to serve from `gh-pages`, and the two tags released
+   before the workflow existed are published by dispatching it with `ref` set to `v0.1.0` and
+   `v0.2.0`.
 4. Set up PyPI trusted publishing for the `pypi` environment, then tag `v0.1.0`.
    `release.yml` checks the tag against `poetry version --short` before building.
 5. Try it against a real API before 1.0 — a public one such as countries.trevorblades.com,
