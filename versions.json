@@ -5,5 +5,12 @@
     "tags": [
       "unreleased"
     ]
+  },
+  {
+    "version": "0.1.0",
+    "path": "0.1.0",
+    "tags": [
+      "latest"
+    ]
   }
 ]
